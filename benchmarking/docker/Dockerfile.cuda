@@ -1,0 +1,55 @@
+# ERA-SmartFarm-RAG BEIR Benchmarking Docker Image (CUDA)
+#
+# Build:
+#   docker build -t era-benchmark:cuda -f benchmarking/docker/Dockerfile.cuda .
+#
+# Run:
+#   docker run --rm --gpus all -v $(pwd)/data/beir:/app/data/beir -v $(pwd)/output:/app/output era-benchmark:cuda
+
+FROM pytorch/pytorch:2.4.1-cuda12.4-cudnn9-runtime
+
+LABEL maintainer="ERA-SmartFarm Team"
+LABEL description="CUDA benchmarking environment for ERA-SmartFarm-RAG BEIR evaluation"
+LABEL version="1.0"
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DEVICE=cuda
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN grep -v "llama-cpp-python" requirements.txt > requirements_benchmark.txt && \
+    pip install --no-cache-dir -r requirements_benchmark.txt && \
+    pip install --no-cache-dir pyyaml tqdm transformers sentence-transformers && \
+    rm requirements_benchmark.txt
+
+# Copy project files
+COPY benchmarking/ ./benchmarking/
+
+# Create directories
+RUN mkdir -p /app/output /app/data/beir
+
+# Default entrypoint for BEIR benchmark
+ENTRYPOINT ["python", "-m", "benchmarking.experiments.beir_benchmark"]
+
+# Default arguments (run all standard datasets with full corpus)
+CMD ["--datasets", "scifact", "nfcorpus", "arguana", \
+     "--beir-dir", "/app/data/beir", \
+     "--output-dir", "/app/output/beir_full", \
+     "--embed-model", "Qwen/Qwen3-Embedding-0.6B", \
+     "--sparse-method", "bm25", \
+     "--download"]

@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Local outputs
+output/
+
+# Large datasets (download via scripts)
+benchmarking/data/beir/

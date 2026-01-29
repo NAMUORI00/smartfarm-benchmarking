@@ -1,0 +1,122 @@
+# ERA-SmartFarm-RAG Benchmark Configuration
+# ==========================================
+#
+# Usage:
+#   python -m benchmarking.run_benchmark --config benchmarking/config/benchmark_config.yaml
+#
+# Or via shell script:
+#   ./benchmarking/scripts/benchmark.sh
+
+# ------------------------------------------------------------------------------
+# Data Paths
+# ------------------------------------------------------------------------------
+data:
+  # Paths can use ${ENV_VAR} or ${ENV_VAR:-default} syntax
+  # Set DATA_ROOT env to point to your data directory
+  # Or leave empty to use Settings defaults
+  corpus: ""
+  qa_dataset: ""
+  
+  # Minimum requirements for validation
+  min_corpus_docs: 100
+  min_qa_pairs: 50
+
+# ------------------------------------------------------------------------------
+# Experiment Settings
+# ------------------------------------------------------------------------------
+# RQ Framework (aligned with Section 1.6 research objectives):
+#   RQ1: Edge Performance - 엣지 환경에서 동작 가능한가? (목표 1)
+#   RQ2: Retrieval Quality - 근거 기반 응답을 지원하는가? (목표 2)
+#   RQ3: Ablation Study - 품질-비용 균형을 위한 컴포넌트 기여도는? (목표 3)
+#   RQ4: Domain Analysis - 도메인 특화 기능이 효과적인가? (목표 4)
+# ------------------------------------------------------------------------------
+experiments:
+  # RQ1: Edge Performance - 엣지 환경(8GB RAM)에서 실용적 성능 검증
+  edge:
+    enabled: true
+    warmup_iterations: 5
+    benchmark_iterations: 50
+    measure:
+      - cold_start_time
+      - query_latency
+      - memory_usage
+      - throughput
+
+  # RQ2: Retrieval Quality - 검색 성능 + 생성 품질 (Baseline Comparison + RAGAS)
+  baseline:
+    enabled: true
+    top_k: 4
+    # Baselines to compare: dense_only, sparse_only, naive_hybrid, rrf_hybrid, proposed
+    baselines:
+      - dense_only
+      - sparse_only
+      - naive_hybrid
+      - rrf_hybrid
+      - proposed
+
+  # RQ3: Ablation Study - 컴포넌트별 기여도 분석
+  ablation:
+    enabled: true
+    top_k: 4
+    # Configurations: "all" or list of specific configs
+    # Available: base_naive, +dat, +dat+onto, +dat+onto+pathrag, full_proposed
+    configs: all
+
+  # RQ4: Domain Analysis - 도메인 특화 기능 효과 검증
+  domain:
+    enabled: true
+    top_k: 4
+    # Analyze by category and complexity
+    analyze_by:
+      - category
+      - complexity
+
+# ------------------------------------------------------------------------------
+# Model Settings
+# ------------------------------------------------------------------------------
+models:
+  embedding:
+    # Lightweight model for edge (recommended)
+    model_id: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+    # Higher quality alternative (slower, more memory):
+    # model_id: Qwen/Qwen3-Embedding-0.6B
+    
+  # Device selection: auto, cpu, cuda
+  device: auto
+
+# ------------------------------------------------------------------------------
+# Output Settings
+# ------------------------------------------------------------------------------
+output:
+  # Base output directory (relative to project root)
+  dir: output/experiments
+  
+  # Create timestamped subdirectory for each run
+  timestamp_subdir: true
+  
+  # Output formats to generate
+  formats:
+    - json      # Detailed results in JSON
+    - markdown  # Human-readable report
+  
+  # Generate LaTeX tables for paper
+  latex: false
+  
+  # Create symlink to latest results
+  create_latest_link: true
+
+# ------------------------------------------------------------------------------
+# Runtime Settings
+# ------------------------------------------------------------------------------
+runtime:
+  # Random seed for reproducibility
+  seed: 42
+  
+  # Logging verbosity
+  verbose: false
+  
+  # Show progress bars
+  progress_bar: true
+  
+  # Continue on experiment failure
+  continue_on_error: true

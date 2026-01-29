@@ -1,0 +1,247 @@
+# ERA-SmartFarm-RAG Benchmarking Docker Compose
+#
+# Usage:
+#   # CPU mode (default)
+#   docker-compose up benchmark-cpu
+#
+#   # GPU mode (requires NVIDIA Container Toolkit)
+#   docker-compose up benchmark-gpu
+#
+#   # Build and run
+#   docker-compose up --build benchmark-cpu
+#
+#   # Run specific experiments only
+#   docker-compose run --rm benchmark-cpu --only baseline,ablation
+#
+#   # Interactive shell
+#   docker-compose run --rm --entrypoint bash benchmark-cpu
+
+version: "3.8"
+
+services:
+  # ==============================================================================
+  # CPU Benchmark Service
+  # ==============================================================================
+  benchmark-cpu:
+    build:
+      context: ../..
+      dockerfile: benchmarking/docker/Dockerfile
+    image: era-benchmark:latest
+    container_name: era-benchmark-cpu
+    environment:
+      - DEVICE=cpu
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Output directory (results will be saved here)
+      - ../../output:/app/output
+      # smartfarm-search core (read-only)
+      - ../../../smartfarm-search/core:/app/core:ro
+      - ../../../smartfarm-search/data:/app/data:ro
+      # Data directory (read-only)
+      - ../../../smartfarm-ingest/output:/data:ro
+      # Custom config (Docker-specific)
+      - ./benchmark_config.yaml:/app/benchmarking/config/benchmark_config.yaml:ro
+    dns:
+      - ${DNS1:-8.8.8.8}
+      - ${DNS2:-1.1.1.1}
+    working_dir: /app
+    # Override default command if needed
+    # command: ["--config", "/app/benchmarking/config/benchmark_config.yaml", "--only", "baseline"]
+    networks:
+      - benchmark-net
+    restart: "no"
+    # Resource limits for CPU
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+        reservations:
+          memory: 4G
+
+  # ==============================================================================
+  # GPU Benchmark Service (requires NVIDIA Container Toolkit)
+  # ==============================================================================
+  benchmark-gpu:
+    build:
+      context: ../..
+      dockerfile: benchmarking/docker/Dockerfile
+    image: era-benchmark:latest
+    container_name: era-benchmark-gpu
+    environment:
+      - DEVICE=cuda
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ../../output:/app/output
+      - ../../../smartfarm-search/core:/app/core:ro
+      - ../../../smartfarm-search/data:/app/data:ro
+      - ../../../smartfarm-ingest/output:/data:ro
+      - ./benchmark_config.yaml:/app/benchmarking/config/benchmark_config.yaml:ro
+    dns:
+      - ${DNS1:-8.8.8.8}
+      - ${DNS2:-1.1.1.1}
+    working_dir: /app
+    networks:
+      - benchmark-net
+    restart: "no"
+    # GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 16G
+
+  # ==============================================================================
+  # Jetson/Edge Benchmark Service (ARM64)
+  # ==============================================================================
+  benchmark-edge:
+    build:
+      context: ../..
+      dockerfile: benchmarking/docker/Dockerfile
+      # For ARM64 builds, use: docker buildx build --platform linux/arm64
+    image: era-benchmark:edge
+    container_name: era-benchmark-edge
+    environment:
+      - DEVICE=cpu
+      - PYTHONUNBUFFERED=1
+      # Edge-specific settings
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+    volumes:
+      - ../../output:/app/output
+      - ../../../smartfarm-search/core:/app/core:ro
+      - ../../../smartfarm-search/data:/app/data:ro
+      - ../../../smartfarm-ingest/output:/data:ro
+      - ./benchmark_config.yaml:/app/benchmarking/config/benchmark_config.yaml:ro
+    dns:
+      - ${DNS1:-8.8.8.8}
+      - ${DNS2:-1.1.1.1}
+    working_dir: /app
+    # Run edge benchmark only
+    command: ["--only", "edge"]
+    networks:
+      - benchmark-net
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 6G
+
+  # ==============================================================================
+  # BEIR Benchmark Service (Full corpus evaluation with GPU)
+  # ==============================================================================
+  beir-benchmark-gpu:
+    build:
+      context: ../..
+      dockerfile: benchmarking/docker/Dockerfile.cuda
+    image: era-benchmark:cuda
+    container_name: era-beir-benchmark
+    environment:
+      - DEVICE=cuda
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ../../output:/app/output
+      - ../../../smartfarm-search/core:/app/core:ro
+      - ../../../smartfarm-search/data:/app/data:ro
+      - ../data/beir:/app/data/beir
+      - ./benchmark_config.yaml:/app/benchmarking/config/benchmark_config.yaml:ro
+    dns:
+      - ${DNS1:-8.8.8.8}
+      - ${DNS2:-1.1.1.1}
+    working_dir: /app
+    entrypoint: ["python", "-m", "benchmarking.experiments.beir_benchmark"]
+    command:
+      - "--datasets"
+      - "scifact"
+      - "nfcorpus"
+      - "arguana"
+      - "--beir-dir"
+      - "/app/data/beir"
+      - "--output-dir"
+      - "/app/output/beir_full"
+      - "--embed-model"
+      - "Qwen/Qwen3-Embedding-0.6B"
+      - "--sparse-method"
+      - "bm25"
+    networks:
+      - benchmark-net
+    restart: "no"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 16G
+
+  # ==============================================================================
+  # BEIR Domain Analysis Benchmark (Additional datasets for paper)
+  # ==============================================================================
+  beir-domain-benchmark:
+    build:
+      context: ../..
+      dockerfile: benchmarking/docker/Dockerfile.cuda
+    image: era-benchmark:cuda
+    container_name: era-beir-domain-benchmark
+    environment:
+      - DEVICE=cuda
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ../../output:/app/output
+      - ../../../smartfarm-search/core:/app/core:ro
+      - ../../../smartfarm-search/data:/app/data:ro
+      - ../../data/beir:/app/data/beir
+      - ./benchmark_config.yaml:/app/benchmarking/config/benchmark_config.yaml:ro
+    dns:
+      - ${DNS1:-8.8.8.8}
+      - ${DNS2:-1.1.1.1}
+    working_dir: /app
+    entrypoint: ["python", "-m", "benchmarking.experiments.beir_benchmark"]
+    command:
+      - "--datasets"
+      - "trec-covid"
+      - "quora"
+      - "fiqa"
+      - "hotpotqa"
+      - "--beir-dir"
+      - "/app/data/beir"
+      - "--output-dir"
+      - "/app/output/beir_domain"
+      - "--embed-model"
+      - "Qwen/Qwen3-Embedding-0.6B"
+      - "--sparse-method"
+      - "bm25"
+      - "--download"
+    networks:
+      - benchmark-net
+    restart: "no"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 16G
+
+networks:
+  benchmark-net:
+    driver: bridge
+
+# ==============================================================================
+# Volume definitions (optional, for persistent caching)
+# ==============================================================================
+volumes:
+  model-cache:
+    driver: local

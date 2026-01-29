@@ -1,0 +1,79 @@
+# ERA-SmartFarm-RAG Benchmark Configuration (Docker)
+# ==================================================
+# This config is for Docker environment with mounted volumes
+
+# ------------------------------------------------------------------------------
+# Data Paths (Docker mount points)
+# ------------------------------------------------------------------------------
+data:
+  # Mounted at /data from smartfarm-ingest/output
+  corpus: /data/wasabi_en_ko_parallel.jsonl
+  qa_dataset: /data/wasabi_qa_dataset.jsonl
+  
+  min_corpus_docs: 100
+  min_qa_pairs: 50
+
+# ------------------------------------------------------------------------------
+# Experiment Settings
+# ------------------------------------------------------------------------------
+experiments:
+  baseline:
+    enabled: true
+    top_k: 4
+    baselines:
+      - dense_only
+      - sparse_only
+      - naive_hybrid
+      - rrf_hybrid
+      - proposed
+  
+  ablation:
+    enabled: true
+    top_k: 4
+    configs: all
+  
+  domain:
+    enabled: true
+    top_k: 4
+    analyze_by:
+      - category
+      - complexity
+  
+  edge:
+    enabled: true
+    warmup_iterations: 5
+    benchmark_iterations: 50
+    measure:
+      - cold_start_time
+      - query_latency
+      - memory_usage
+      - throughput
+
+# ------------------------------------------------------------------------------
+# Model Settings
+# ------------------------------------------------------------------------------
+models:
+  embedding:
+    model_id: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+  device: auto
+
+# ------------------------------------------------------------------------------
+# Output Settings
+# ------------------------------------------------------------------------------
+output:
+  dir: /app/output
+  timestamp_subdir: true
+  formats:
+    - json
+    - markdown
+  latex: false
+  create_latest_link: true
+
+# ------------------------------------------------------------------------------
+# Runtime Settings
+# ------------------------------------------------------------------------------
+runtime:
+  seed: 42
+  verbose: false
+  progress_bar: true
+  continue_on_error: true
