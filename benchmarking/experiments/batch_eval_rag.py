@@ -14,6 +14,8 @@ JSONL 입력 형식 예시:
 
 - expected_keywords 는 선택이며, 없으면 keyword 기반 hit 지표는 계산하지 않음.
 """
+from __future__ import annotations
+
 import argparse
 import json
 import time
@@ -35,10 +37,13 @@ def main() -> None:
     ap.add_argument("--input", type=Path, default=None, help="평가용 질의 JSONL 경로")
     ap.add_argument("--ranker", default="none", help="사용할 리랭커 (none|llm|bge|llm-lite)")
     ap.add_argument("--top_k", type=int, default=4)
+    ap.add_argument("--limit", type=int, default=None, help="평가할 질의 개수 제한 (기본: 전체)")
     ap.add_argument("--output", type=Path, default=Path("/tmp/batch_eval_results.json"))
     args = ap.parse_args()
 
     queries = load_queries(args.input)
+    if args.limit is not None:
+        queries = queries[: max(0, int(args.limit))]
     print(f"총 질의 수: {len(queries)} (입력 파일: {args.input or '내장 샘플'})")
     print(f"BASE_URL = {args.host}, ranker = {args.ranker}, top_k = {args.top_k}")
 
