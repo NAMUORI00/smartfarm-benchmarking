@@ -1,8 +1,0 @@
-{"id": "q1_temp_tomato", "category": "온도", "question": "토마토 온실 생육 최적 온도는?", "expected_keywords": ["토마토", "온실", "온도", "주간", "야간"]}
-{"id": "q2_nutrient_paprika", "category": "양액", "question": "파프리카 양액 EC 기준을 알려줘", "expected_keywords": ["파프리카", "양액", "EC", "dS/m"]}
-{"id": "q3_disease_strawberry", "category": "병해충", "question": "딸기 흰가루병 초기 증상과 대처법은?", "expected_keywords": ["딸기", "흰가루병", "초기", "증상", "대처"]}
-{"id": "q4_schedule_lettuce", "category": "재배일정", "question": "상추 파종부터 수확까지 재배 일정을 정리해줘", "expected_keywords": ["상추", "파종", "육묘", "수확", "재배"]}
-{"id": "q5_humidity_control", "category": "환경제어", "question": "온실 습도가 80% 이상일 때 어떻게 관리해야 하나?", "expected_keywords": ["온실", "습도", "80%", "환기"]}
-{"id": "q6_ph_low", "category": "양액", "question": "양액 pH가 5.5 이하로 떨어졌을 때 조치 방법은?", "expected_keywords": ["양액", "pH", "5.5", "조절"]}
-{"id": "q7_low_temp_damage", "category": "온도", "question": "야간 온도가 10도 이하로 떨어지면 작물에 어떤 영향이 있나?", "expected_keywords": ["야간", "온도", "10도", "저온", "장해"]}
-{"id": "q8_leaf_disease_tomato", "category": "병해충", "question": "토마토 잎마름병 예방을 위한 환경 관리 기준은?", "expected_keywords": ["토마토", "잎마름병", "예방", "환경", "관리"]}
