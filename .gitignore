@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# HuggingFace datasets cache (downloaded at runtime)
+.cache/
+
 # Local outputs
 output/
 
