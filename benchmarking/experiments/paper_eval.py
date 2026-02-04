@@ -458,6 +458,128 @@ def _evaluate_with_generation(
     return retrieval_block
 
 
+def _resolve_ragas_llm(*, model: str, base_url: str, api_key: str):
+    try:
+        from langchain_openai import ChatOpenAI
+    except Exception as e:  # pragma: no cover - optional dependency
+        raise RuntimeError(f"langchain-openai is required for --with-ragas: {e}")
+
+    llm = ChatOpenAI(
+        model=str(model),
+        temperature=0,
+        api_key=str(api_key),
+        base_url=str(base_url) if base_url else None,
+        timeout=60,
+        max_retries=1,
+    )
+
+    try:
+        from ragas.llms import LangchainLLMWrapper
+
+        return LangchainLLMWrapper(llm)
+    except Exception:
+        return llm
+
+
+def _run_ragas_eval(
+    *,
+    samples: Sequence[EvalSample],
+    k: int,
+    rrf,
+    ours_full,
+    model: str,
+    base_url: str,
+    api_key: str,
+) -> Dict[str, Dict[str, float]]:
+    """Run RAGAS (4 metrics only) for RRF vs Ours Full.
+
+    This is intentionally limited to the standard, well-known RAGAS axes:
+      - Faithfulness
+      - Answer Relevancy
+      - Context Precision
+      - Context Recall
+    """
+    if rrf is None or ours_full is None:
+        return {}
+
+    try:
+        from datasets import Dataset
+    except Exception as e:  # pragma: no cover - optional dependency
+        raise RuntimeError(f"datasets is required for --with-ragas: {e}")
+
+    try:
+        from ragas import evaluate
+    except Exception as e:  # pragma: no cover - optional dependency
+        raise RuntimeError(f"ragas is required for --with-ragas: {e}")
+
+    # Metrics import (compat across ragas versions)
+    try:
+        from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness
+
+        ragas_metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
+    except Exception:
+        from ragas.metrics import AnswerRelevancy, ContextPrecision, ContextRecall, Faithfulness
+
+        ragas_metrics = [
+            Faithfulness(),
+            AnswerRelevancy(),
+            ContextPrecision(),
+            ContextRecall(),
+        ]
+
+    evaluator_llm = _resolve_ragas_llm(model=model, base_url=base_url, api_key=api_key)
+
+    def _build_dataset(method_retriever) -> Dataset:
+        rows: List[Dict[str, Any]] = []
+        for s in samples:
+            contexts = method_retriever.search(s.question, k=int(k))
+            ctx_texts = [str(c.text) for c in contexts]
+            prompt = build_rag_answer_prompt(s.question, contexts)
+            answer = ""
+            try:
+                answer = str((generate_json(prompt) or {}).get("answer") or "")
+            except Exception:
+                answer = ""
+            rows.append(
+                {
+                    "question": s.question,
+                    "answer": answer,
+                    "contexts": ctx_texts,
+                    "ground_truth": s.gold_answer,
+                }
+            )
+        return Dataset.from_list(rows)
+
+    out: Dict[str, Dict[str, float]] = {}
+    for name, retriever in (("rrf", rrf), ("ours_full", ours_full)):
+        dataset = _build_dataset(retriever)
+        result = evaluate(
+            dataset=dataset,
+            metrics=ragas_metrics,
+            llm=evaluator_llm,
+            raise_exceptions=False,
+            show_progress=True,
+        )
+
+        # Convert EvaluationResult -> mean scores dict
+        scores: Dict[str, float] = {}
+        try:
+            df = result.to_pandas()
+            for col in ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]:
+                if col in df.columns:
+                    scores[col] = float(df[col].mean())
+        except Exception:
+            try:
+                for k2, v2 in dict(result).items():
+                    scores[str(k2)] = float(v2)
+            except Exception:
+                scores = {}
+
+        out[name] = scores
+
+    return out
+
+
 def _write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as f:
@@ -477,6 +599,10 @@ def run_paper_eval(
     beir_doc_limit: int,
     beir_split: str,
     embed_model_id: Optional[str],
+    with_ragas: bool,
+    ragas_model: str,
+    ragas_base_url: str,
+    ragas_api_key: str,
 ) -> Dict[str, Any]:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     data_dir = Path(__file__).resolve().parents[1] / "data"
@@ -574,6 +700,17 @@ def run_paper_eval(
                 k_values=k_values,
             )
 
+        if with_ragas:
+            out_block["ragas"] = _run_ragas_eval(
+                samples=samples,
+                k=int(k),
+                rrf=retrievers.get("rrf"),
+                ours_full=retrievers.get("ours_full"),
+                model=ragas_model,
+                base_url=ragas_base_url,
+                api_key=ragas_api_key,
+            )
+
         results["datasets"]["multihop"] = out_block
 
     elif track == "beir":
@@ -645,6 +782,7 @@ def run_paper_eval(
     # CSV outputs (paper tables)
     retrieval_rows: List[Dict[str, Any]] = []
     qa_rows: List[Dict[str, Any]] = []
+    ragas_rows: List[Dict[str, Any]] = []
 
     for dname, dblock in results["datasets"].items():
         for mname, mblock in (dblock.get("results") or {}).items():
@@ -670,6 +808,22 @@ def run_paper_eval(
                     }
                 )
 
+        ragas_block = dblock.get("ragas")
+        if isinstance(ragas_block, dict):
+            for mname, metrics in ragas_block.items():
+                if not isinstance(metrics, dict):
+                    continue
+                ragas_rows.append(
+                    {
+                        "dataset": dname,
+                        "method": mname,
+                        "faithfulness": metrics.get("faithfulness", ""),
+                        "answer_relevancy": metrics.get("answer_relevancy", ""),
+                        "context_precision": metrics.get("context_precision", ""),
+                        "context_recall": metrics.get("context_recall", ""),
+                    }
+                )
+
     base = out_path.with_suffix("")
     _write_csv(
         Path(str(base) + "_retrieval.csv"),
@@ -681,6 +835,12 @@ def run_paper_eval(
             Path(str(base) + "_qa.csv"),
             qa_rows,
             fieldnames=["dataset", "method", "mean_exact_match", "mean_f1"],
+        )
+    if ragas_rows:
+        _write_csv(
+            Path(str(base) + "_ragas.csv"),
+            ragas_rows,
+            fieldnames=["dataset", "method", "faithfulness", "answer_relevancy", "context_precision", "context_recall"],
         )
 
     return results
@@ -708,6 +868,12 @@ def main() -> int:
     # Embedding model override (helps fast local runs on CPU)
     parser.add_argument("--embed-model-id", default=os.getenv("EMBED_MODEL_ID", ""), help="Override embedding model id")
 
+    # Optional: RAGAS (LLM-as-a-Judge)
+    parser.add_argument("--with-ragas", action="store_true", help="Run RAGAS (4 metrics) for RRF vs Ours Full")
+    parser.add_argument("--ragas-model", default=os.getenv("RAGAS_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini")))
+    parser.add_argument("--ragas-base-url", default=os.getenv("OPENAI_BASE_URL", ""))
+    parser.add_argument("--ragas-api-key", default=os.getenv("OPENAI_API_KEY", os.getenv("API_KEY", "")))
+
     args = parser.parse_args()
 
     methods = _parse_methods(args.methods)
@@ -731,6 +897,10 @@ def main() -> int:
         beir_doc_limit=int(args.beir_doc_limit),
         beir_split=str(args.beir_split),
         embed_model_id=embed_model_id,
+        with_ragas=bool(args.with_ragas),
+        ragas_model=str(args.ragas_model),
+        ragas_base_url=str(args.ragas_base_url),
+        ragas_api_key=str(args.ragas_api_key),
     )
     return 0
 
