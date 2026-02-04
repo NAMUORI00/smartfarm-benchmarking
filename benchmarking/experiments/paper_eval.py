@@ -42,7 +42,7 @@ from core.Services.Retrieval.Embeddings import EmbeddingRetriever
 from core.Services.Retrieval.Sparse import BM25Store
 
 
-DEFAULT_METHODS = ["bm25_only", "dense_only", "rrf"]
+DEFAULT_METHODS = ["bm25_only", "dense_only", "rrf", "trigraph_only", "ours_full"]
 
 
 @dataclass(frozen=True)
@@ -304,6 +304,52 @@ def _build_dense_sparse_indices(
     return dense, sparse, stats
 
 
+def _build_trigraph_index(
+    docs: List[SourceDoc],
+    *,
+    out_dir: Path,
+    embedder: EmbeddingRetriever,
+) -> Tuple[Any, Dict[str, Any]]:
+    from core.Services.Retrieval.TriGraph.Builder import build_trigraph_from_chunks
+    from core.Services.Retrieval.TriGraph.Retriever import TriGraphConfig, TriGraphRetriever
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    t0 = time.perf_counter()
+    build_trigraph_from_chunks(
+        docs,
+        embedder=embedder,
+        out_dir=out_dir,
+        chunk_size=int(settings.CHUNK_SIZE),
+        chunk_stride=int(settings.CHUNK_STRIDE),
+        corpus_path=str(out_dir),
+    )
+    build_s = float(time.perf_counter() - t0)
+
+    stats = {
+        "trigraph_build_s": build_s,
+        "trigraph_size_bytes": int(_dir_size_bytes(out_dir)),
+    }
+
+    cfg = TriGraphConfig(
+        index_dir=out_dir,
+        entity_top_k=int(getattr(settings, "TRIGRAPH_ENTITY_TOP_K", 10)),
+        entity_threshold=float(getattr(settings, "TRIGRAPH_ENTITY_THRESHOLD", 0.35)),
+        max_iterations=int(getattr(settings, "TRIGRAPH_MAX_ITERATIONS", 3)),
+        iteration_threshold=float(getattr(settings, "TRIGRAPH_ITERATION_THRESHOLD", 0.35)),
+        top_k_sentence=int(getattr(settings, "TRIGRAPH_TOP_K_SENTENCE", 3)),
+        max_active_entities=int(getattr(settings, "TRIGRAPH_MAX_ACTIVE_ENTITIES", 512)),
+        max_candidate_chunks=int(getattr(settings, "TRIGRAPH_MAX_CANDIDATE_CHUNKS", 256)),
+        use_ppr=bool(getattr(settings, "TRIGRAPH_USE_PPR", True)),
+        ppr_damping=float(getattr(settings, "TRIGRAPH_PPR_DAMPING", 0.85)),
+        ppr_iters=int(getattr(settings, "TRIGRAPH_PPR_ITERS", 16)),
+    )
+
+    docs_by_id = {d.id: d for d in docs}
+    trigraph = TriGraphRetriever(cfg, docs_by_id=docs_by_id, embedder=embedder)
+    return trigraph, stats
+
+
 def _evaluate_retrieval_only(
     *,
     method_name: str,
@@ -460,18 +506,51 @@ def run_paper_eval(
             chunks,
             out_dir=dataset_out,
             embed_model_id=embed_model_id,
-            need_dense=any(m in ("dense_only", "rrf") for m in methods),
-            need_sparse=any(m in ("bm25_only", "rrf") for m in methods),
+            need_dense=any(m in ("dense_only", "rrf", "ours_full") for m in methods),
+            need_sparse=any(m in ("bm25_only", "rrf", "ours_full") for m in methods),
         )
 
+        trigraph = None
+        if any(m in ("trigraph_only", "ours_full") for m in methods):
+            trigraph_dir = dataset_out / "trigraph_edge"
+            trigraph, trigraph_stats = _build_trigraph_index(
+                chunks,
+                out_dir=trigraph_dir,
+                embedder=dense,
+            )
+            build_stats.update(trigraph_stats)
+        else:
+            build_stats.update({"trigraph_build_s": 0.0, "trigraph_size_bytes": 0})
+
         from benchmarking.baselines.dense_only import DenseOnlyRetriever
-        from benchmarking.baselines.sparse_only import SparseOnlyRetriever
+        from benchmarking.baselines.ours_fusion import OursFullRetriever
         from benchmarking.baselines.rrf_hybrid import RRFHybridRetriever
+        from benchmarking.baselines.sparse_only import SparseOnlyRetriever
+        from benchmarking.baselines.trigraph_only import TriGraphOnlyRetriever
+
+        from core.Services.Retrieval.Fusion import FusionConfig, TriGraphFusionRetriever
 
         retrievers: Dict[str, Any] = {
             "bm25_only": SparseOnlyRetriever(sparse),
             "dense_only": DenseOnlyRetriever(dense),
             "rrf": RRFHybridRetriever(dense, sparse),
+            "trigraph_only": TriGraphOnlyRetriever(trigraph) if trigraph is not None else None,
+            "ours_full": OursFullRetriever(
+                TriGraphFusionRetriever(
+                    dense,
+                    sparse,
+                    trigraph=trigraph,
+                    config=FusionConfig(
+                        rrf_k=int(getattr(settings, "FUSION_RRF_K", 60)),
+                        use_dynamic_weights=bool(getattr(settings, "FUSION_DYNAMIC_WEIGHTS", True)),
+                        base_dense=float(getattr(settings, "FUSION_BASE_DENSE", 0.45)),
+                        base_sparse=float(getattr(settings, "FUSION_BASE_SPARSE", 0.35)),
+                        base_trigraph=float(getattr(settings, "FUSION_BASE_TRIGRAPH", 0.20)),
+                    ),
+                )
+            )
+            if trigraph is not None
+            else None,
         }
 
         k_values = [int(k), 10] if int(k) != 10 else [int(k)]
@@ -484,11 +563,12 @@ def run_paper_eval(
         }
 
         for m in methods:
-            if m not in retrievers:
+            r = retrievers.get(m)
+            if r is None:
                 continue
             out_block["results"][m] = _evaluate_with_generation(
                 method_name=m,
-                retriever=retrievers[m],
+                retriever=r,
                 samples=samples,
                 k=int(k),
                 k_values=k_values,
@@ -632,11 +712,13 @@ def main() -> int:
 
     methods = _parse_methods(args.methods)
 
-    # For now (commit 2), only support bm25/dense/rrf. Tri-Graph baselines come in the next commit.
-    supported = set(DEFAULT_METHODS)
+    if str(args.track) == "beir":
+        supported = {"bm25_only", "dense_only", "rrf"}
+    else:
+        supported = set(DEFAULT_METHODS)
     methods = [m for m in methods if m in supported]
     if not methods:
-        methods = list(DEFAULT_METHODS)
+        methods = [m for m in DEFAULT_METHODS if m in supported]
 
     embed_model_id = args.embed_model_id.strip() or None
 
