@@ -129,8 +129,8 @@ def hit_rate(retrieved: List[str], relevant: Set[str], k: int = None) -> float:
 class RetrievalMetrics:
     """Container for computing multiple retrieval metrics."""
     
-    # K=4 추가: 논문 5.1.3 "본 연구에서는 K=4를 주요 평가 기준으로 사용"
-    k_values: List[int] = field(default_factory=lambda: [1, 4, 5, 10])
+    # Paper primary K=4 + standard K=10
+    k_values: List[int] = field(default_factory=lambda: [4, 10])
     
     def compute_all(
         self,

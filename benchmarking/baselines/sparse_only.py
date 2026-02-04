@@ -6,15 +6,25 @@ TF-IDF 기반 스파스 검색만 사용하는 리트리버.
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Protocol, runtime_checkable
 
 from benchmarking.bootstrap import ensure_search_on_path
 
 ensure_search_on_path()
 
 from core.Services.Retrieval.Base import BaseRetriever
-from core.Services.Retrieval.Hybrid import SparseRetriever
 from core.Models.Schemas import SourceDoc
+
+
+@runtime_checkable
+class SparseRetrieverProtocol(Protocol):
+    """Sparse retriever 프로토콜 (BM25Store/MiniStore 호환)."""
+
+    texts: List[str]
+    ids: List[str]
+
+    def scores(self, q: str): ...
+    def search(self, q: str, k: int = 4) -> List[SourceDoc]: ...
 
 
 class SparseOnlyRetriever(BaseRetriever):
@@ -31,7 +41,7 @@ class SparseOnlyRetriever(BaseRetriever):
     - 전통적인 키워드 기반 검색의 성능 기준선
     """
 
-    def __init__(self, sparse: SparseRetriever):
+    def __init__(self, sparse: SparseRetrieverProtocol):
         """
         Args:
             sparse: Sparse store (BM25Store or MiniStore)
