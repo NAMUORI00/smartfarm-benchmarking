@@ -355,7 +355,10 @@ def _run_ragas_eval(
     base_url: str,
     api_key: str,
 ) -> Dict[str, Dict[str, float]]:
-    """Run RAGAS (4 metrics only) for RRF vs Ours Full on a capped sample."""
+    """Run RAGAS (4 metrics only) for RRF vs Ours Full on a capped sample.
+
+    We compute per-row scores and report mean values (standard reporting).
+    """
     if rrf is None or ours_full is None:
         return {}
 
@@ -419,9 +422,28 @@ def _run_ragas_eval(
     out: Dict[str, Dict[str, float]] = {}
     for name, method_retriever in [("rrf", rrf), ("ours_full", ours_full)]:
         ds = _build_dataset(method_retriever)
-        res = evaluate(ds, metrics=ragas_metrics, llm=evaluator_llm)
-        # `evaluate` returns a Dataset-like object; normalize to plain floats.
-        out[name] = {k: float(v) for k, v in dict(res).items()}  # type: ignore[arg-type]
+        res = evaluate(
+            dataset=ds,
+            metrics=ragas_metrics,
+            llm=evaluator_llm,
+            raise_exceptions=False,
+            show_progress=True,
+        )
+
+        scores: Dict[str, float] = {}
+        try:
+            df = res.to_pandas()
+            for col in ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]:
+                if col in df.columns:
+                    scores[col] = float(df[col].mean())
+        except Exception:
+            try:
+                for k2, v2 in dict(res).items():  # type: ignore[arg-type]
+                    scores[str(k2)] = float(v2)
+            except Exception:
+                scores = {}
+
+        out[name] = scores
 
     return out
 
@@ -745,4 +767,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
