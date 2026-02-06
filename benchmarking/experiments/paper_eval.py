@@ -76,20 +76,33 @@ def _dir_size_bytes(path: Path) -> int:
 def _chunk_docs(
     docs: Sequence[Tuple[str, str]],
     *,
+    chunk_method: str,
     chunk_size: int,
     chunk_stride: int,
+    chunk_token_size: int,
+    chunk_token_overlap: int,
+    chunk_tokenizer_model: str,
 ):
     from benchmarking.bootstrap import ensure_search_on_path
 
     ensure_search_on_path()
 
     from core.Models.Schemas import SourceDoc
-    from core.Services.Ingest.Chunking import sentence_split, window_chunks
+    from core.Services.Ingest.Chunking import sentence_split, token_chunks, window_chunks
 
     out: List[SourceDoc] = []
+    method = str(chunk_method or "sentence_window").strip().lower()
     for doc_id, text in docs:
-        sents = sentence_split(text or "")
-        chunks = window_chunks(sents, window=int(chunk_size), stride=int(chunk_stride))
+        if method == "token":
+            chunks = token_chunks(
+                text or "",
+                chunk_token_size=int(chunk_token_size),
+                chunk_token_overlap=int(chunk_token_overlap),
+                tokenizer_model=str(chunk_tokenizer_model or "gpt-4o-mini"),
+            )
+        else:
+            sents = sentence_split(text or "")
+            chunks = window_chunks(sents, window=int(chunk_size), stride=int(chunk_stride))
         for i, chunk in enumerate(chunks):
             chunk_text = (chunk or "").strip()
             if not chunk_text:
@@ -161,6 +174,8 @@ def _build_trigraph_index(
     *,
     out_dir: Path,
     embedder,
+    chunk_size: int,
+    chunk_stride: int,
 ) -> Tuple[Any, Dict[str, Any]]:
     from benchmarking.bootstrap import ensure_search_on_path
 
@@ -177,8 +192,8 @@ def _build_trigraph_index(
         list(docs),
         embedder=embedder,
         out_dir=out_dir,
-        chunk_size=int(settings.CHUNK_SIZE),
-        chunk_stride=int(settings.CHUNK_STRIDE),
+        chunk_size=int(chunk_size),
+        chunk_stride=int(chunk_stride),
         corpus_path=str(out_dir),
     )
     build_s = float(time.perf_counter() - t0)
@@ -492,6 +507,13 @@ def run_paper_eval(
     max_queries: int,
     seed: int,
     embed_model_id: Optional[str],
+    chunk_method: Optional[str] = None,
+    chunk_size: Optional[int] = None,
+    chunk_stride: Optional[int] = None,
+    chunk_token_size: Optional[int] = None,
+    chunk_token_overlap: Optional[int] = None,
+    chunk_tokenizer_model: Optional[str] = None,
+    retrieval_only: bool = False,
     with_ragas: bool,
     ragas_max_queries: int,
     ragas_model: str,
@@ -506,24 +528,41 @@ def run_paper_eval(
     ensure_search_on_path()
     from core.Config.Settings import settings
 
+    method = str(chunk_method or getattr(settings, "CHUNK_METHOD", "sentence_window")).strip().lower()
+    if method not in {"sentence_window", "token"}:
+        method = "sentence_window"
+
+    eff_chunk_size = int(chunk_size) if chunk_size is not None else int(getattr(settings, "CHUNK_SIZE", 5))
+    eff_chunk_stride = int(chunk_stride) if chunk_stride is not None else int(getattr(settings, "CHUNK_STRIDE", 2))
+    eff_chunk_token_size = int(chunk_token_size) if chunk_token_size is not None else int(getattr(settings, "CHUNK_TOKEN_SIZE", 1200))
+    eff_chunk_token_overlap = int(chunk_token_overlap) if chunk_token_overlap is not None else int(getattr(settings, "CHUNK_TOKEN_OVERLAP", 100))
+    eff_chunk_token_size = max(1, eff_chunk_token_size)
+    eff_chunk_token_overlap = max(0, min(eff_chunk_token_size - 1, eff_chunk_token_overlap))
+    eff_chunk_tokenizer_model = str(chunk_tokenizer_model or getattr(settings, "CHUNK_TOKENIZER_MODEL", "gpt-4o-mini"))
+
     run_meta = {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "datasets": list(datasets),
         "k": int(k),
         "methods": list(methods),
-        "chunk_size": int(settings.CHUNK_SIZE),
-        "chunk_stride": int(settings.CHUNK_STRIDE),
+        "chunk_method": method,
+        "chunk_size": int(eff_chunk_size),
+        "chunk_stride": int(eff_chunk_stride),
+        "chunk_token_size": int(eff_chunk_token_size),
+        "chunk_token_overlap": int(eff_chunk_token_overlap),
+        "chunk_tokenizer_model": eff_chunk_tokenizer_model,
         "embed_model_id": str(embed_model_id or getattr(settings, "EMBED_MODEL_ID", "")),
         "max_queries": int(max_queries),
         "seed": int(seed),
+        "retrieval_only": bool(retrieval_only),
     }
 
     results: Dict[str, Any] = {"meta": run_meta, "datasets": {}}
 
     for ds_name in datasets:
         if ds_name == "agxqa":
-            samples, corpus_docs = load_agxqa(split="test", max_queries=None, seed=seed)
-            eval_mode = "qa"
+            samples, corpus_docs = load_agxqa(split="test", max_queries=max_queries, seed=seed)
+            eval_mode = "retrieval" if retrieval_only else "qa"
         elif ds_name == "2wiki":
             samples, corpus_docs = load_twowiki_multihopqa(
                 split="validation",
@@ -536,8 +575,12 @@ def run_paper_eval(
 
         chunks = _chunk_docs(
             corpus_docs,
-            chunk_size=int(settings.CHUNK_SIZE),
-            chunk_stride=int(settings.CHUNK_STRIDE),
+            chunk_method=method,
+            chunk_size=int(eff_chunk_size),
+            chunk_stride=int(eff_chunk_stride),
+            chunk_token_size=int(eff_chunk_token_size),
+            chunk_token_overlap=int(eff_chunk_token_overlap),
+            chunk_tokenizer_model=eff_chunk_tokenizer_model,
         )
 
         dataset_out = out_path.parent / "paper_eval_artifacts" / ds_name
@@ -556,10 +599,18 @@ def run_paper_eval(
         trigraph = None
         if any(m in ("trigraph_only", "ours_full") for m in methods):
             trigraph_dir = dataset_out / "trigraph_edge"
+            # TriGraph meta records chunk params; encode token chunking as (size, size-overlap) for traceability.
+            tri_chunk_size = int(eff_chunk_size)
+            tri_chunk_stride = int(eff_chunk_stride)
+            if method == "token":
+                tri_chunk_size = int(eff_chunk_token_size)
+                tri_chunk_stride = int(max(1, eff_chunk_token_size - eff_chunk_token_overlap))
             trigraph, trigraph_stats = _build_trigraph_index(
                 chunks,
                 out_dir=trigraph_dir,
                 embedder=dense,
+                chunk_size=tri_chunk_size,
+                chunk_stride=tri_chunk_stride,
             )
             build_stats.update(trigraph_stats)
         else:
@@ -719,6 +770,11 @@ def main() -> int:
     parser.add_argument("--methods", default="all", help="Comma list or 'all'")
     parser.add_argument("--k", type=int, default=4)
     parser.add_argument("--out", default="output/paper_eval.json")
+    parser.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        help="Evaluate retrieval only (skip generation) even for agxqa",
+    )
 
     # Dataset controls
     parser.add_argument("--max-queries", type=int, default=int(os.getenv("PAPER_EVAL_MAX_QUERIES", "1000")))
@@ -726,6 +782,23 @@ def main() -> int:
 
     # Embedding model override (helps fast local runs on CPU)
     parser.add_argument("--embed-model-id", default=os.getenv("EMBED_MODEL_ID", ""), help="Override embedding model id")
+
+    # Chunking controls (token chunking aligns with LightRAG-style ingestion)
+    parser.add_argument(
+        "--chunk-method",
+        default=os.getenv("CHUNK_METHOD", "sentence_window"),
+        choices=["sentence_window", "token"],
+        help="Chunking method for the evaluation corpus",
+    )
+    parser.add_argument("--chunk-size", type=int, default=int(os.getenv("CHUNK_SIZE", "5")))
+    parser.add_argument("--chunk-stride", type=int, default=int(os.getenv("CHUNK_STRIDE", "2")))
+    parser.add_argument("--chunk-token-size", type=int, default=int(os.getenv("CHUNK_TOKEN_SIZE", "1200")))
+    parser.add_argument("--chunk-token-overlap", type=int, default=int(os.getenv("CHUNK_TOKEN_OVERLAP", "100")))
+    parser.add_argument(
+        "--chunk-tokenizer-model",
+        default=os.getenv("CHUNK_TOKENIZER_MODEL", "gpt-4o-mini"),
+        help="tiktoken model name for token chunking (fallbacks if unsupported)",
+    )
 
     # Optional: RAGAS (LLM-as-a-Judge)
     parser.add_argument("--with-ragas", action="store_true", help="Run RAGAS (4 metrics) for RRF vs Ours Full (agxqa only)")
@@ -756,6 +829,13 @@ def main() -> int:
         max_queries=int(args.max_queries),
         seed=int(args.seed),
         embed_model_id=embed_model_id,
+        chunk_method=str(args.chunk_method),
+        chunk_size=int(args.chunk_size),
+        chunk_stride=int(args.chunk_stride),
+        chunk_token_size=int(args.chunk_token_size),
+        chunk_token_overlap=int(args.chunk_token_overlap),
+        chunk_tokenizer_model=str(args.chunk_tokenizer_model),
+        retrieval_only=bool(args.retrieval_only),
         with_ragas=bool(args.with_ragas),
         ragas_max_queries=int(args.ragas_max_queries),
         ragas_model=str(args.ragas_model),

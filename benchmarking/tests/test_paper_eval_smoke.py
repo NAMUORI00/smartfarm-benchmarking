@@ -74,7 +74,16 @@ def _fake_2wiki() -> Tuple[List[EvalSample], List[Tuple[str, str]]]:
     return samples, corpus
 
 
-def _fake_chunk_docs(docs: Sequence[Tuple[str, str]], *, chunk_size: int, chunk_stride: int):  # noqa: ARG001
+def _fake_chunk_docs(
+    docs: Sequence[Tuple[str, str]],
+    *,
+    chunk_method: str,
+    chunk_size: int,
+    chunk_stride: int,
+    chunk_token_size: int,
+    chunk_token_overlap: int,
+    chunk_tokenizer_model: str,
+):  # noqa: ARG001
     # One chunk per doc for the smoke test.
     out: List[_Doc] = []
     for doc_id, text in docs:
@@ -96,7 +105,7 @@ def _fake_build_dense_sparse_indices(docs, *, out_dir: Path, embed_model_id: str
     return dense, sparse, stats
 
 
-def _fake_build_trigraph_index(docs, *, out_dir: Path, embedder):  # noqa: ARG001
+def _fake_build_trigraph_index(docs, *, out_dir: Path, embedder, chunk_size: int, chunk_stride: int):  # noqa: ARG001
     trigraph = _FakeTriGraph(list(docs))
     stats = {"trigraph_build_s": 0.0, "trigraph_size_bytes": 0}
     return trigraph, stats
